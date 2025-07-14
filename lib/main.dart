@@ -192,6 +192,11 @@ void initState() {
               tooltip: 'Upozornenia',
             ),
             IconButton(
+              icon: const Icon(Icons.add),
+              tooltip: 'Pridať zákazku',
+              onPressed: pridajZakazku,
+            ),
+            IconButton(
               icon: const Icon(Icons.settings),
               onPressed: () {
                 Navigator.push(
@@ -294,6 +299,65 @@ void initState() {
           padding: const EdgeInsets.all(12),
           child: Column(
             children: [
+const SizedBox(height: 12),
+ElevatedButton.icon(
+onPressed: () {
+  final novyController = TextEditingController();
+
+  showDialog(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text('Nová zákazka'),
+      content: TextField(
+        controller: novyController,
+        decoration: const InputDecoration(
+          hintText: 'Zadaj názov zákazky',
+          prefixIcon: Icon(Icons.edit),
+          border: OutlineInputBorder(),
+        ),
+        autofocus: true,
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(ctx),
+          child: const Text('Zrušiť'),
+        ),
+        ElevatedButton(
+          onPressed: () {
+            final text = novyController.text.trim();
+            if (text.isEmpty) return;
+
+            final nova = Zakazka(
+              nazov: text,
+              stav: 'Čaká', // ← automaticky nastavíme
+              datum: DateFormat('d.M.yyyy').format(DateTime.now()),
+              poznamka: '',
+              termin: '',
+              hviezdicka: false,
+              dolezita: false,
+            );
+
+            setState(() => zakazky.add(nova));
+            ulozZakazky();
+            Navigator.pop(ctx);
+          },
+          child: const Text('Uložiť'),
+        ),
+      ],
+    ),
+  );
+},
+  icon: const Icon(Icons.add),
+  label: const Text('Pridať zákazku'),
+  style: ElevatedButton.styleFrom(
+    backgroundColor: Theme.of(context).colorScheme.primary,
+    foregroundColor: Theme.of(context).colorScheme.onPrimary,
+    elevation: 6,
+    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+    textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+  ),
+),
               const SizedBox(height: 12),
               TextField(
                 controller: vyhladavanieController,
@@ -352,6 +416,18 @@ void initState() {
                                     style: const TextStyle(fontSize: 12, color: Colors.grey),
                                   ),
                                   if (z.termin.isNotEmpty && DateTime.tryParse(z.termin) != null)
+Chip(
+  label: Text(zostavajuciCas(z.termin)),
+  backgroundColor: z.termin.trim().isEmpty
+      ? Colors.grey
+      : datumJePoTermine(z.termin)
+          ? Colors.redAccent
+          : Colors.greenAccent,
+  labelStyle: const TextStyle(color: Colors.white),
+  visualDensity: VisualDensity.compact,
+  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 0),
+),
+
                                     Text(
                                       formatujInfoZTterminu(z.termin),
                                       style: TextStyle(
@@ -426,52 +502,112 @@ void initState() {
     ulozZakazky();
   }
 
-  void upravitZakazku(int index) {
-    final zakazka = zakazky[index];
-    final poznamkaController = TextEditingController(text: zakazka.poznamka);
-    String lokalnyStav = zakazka.stav;
+bool datumJePoTermine(String termin) {
+  if (termin.trim().isEmpty) return false;
 
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text('Upraviť: ${zakazka.nazov}'),
-        content: Column(
+  try {
+    final datum = DateFormat('d.M.yyyy').parse(termin);
+    return datum.isBefore(DateTime.now());
+  } catch (e) {
+    debugPrint('Neplatný termín: $termin');
+    return false;
+  }
+}
+
+void upravitZakazku(int index) {
+  final zakazka = zakazky[index];
+  final poznamkaController = TextEditingController(text: zakazka.poznamka);
+  final terminController = TextEditingController(text: zakazka.termin);
+  String lokalnyStav = zakazka.stav;
+
+  showDialog(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: Text('Upraviť: ${zakazka.nazov}'),
+      content: SingleChildScrollView(
+        child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            TextField(controller: poznamkaController),
-            DropdownButton<String>(
+            DropdownButtonFormField<String>(
               value: lokalnyStav,
-              onChanged: (val) => setState(() => lokalnyStav = val ?? 'Čaká'),
               items: ['Čaká', 'V riešení', 'Hotovo']
-                  .map((stav) => DropdownMenuItem(value: stav, child: Text(stav)))
+                  .map((stav) => DropdownMenuItem(
+                        value: stav,
+                        child: Text(stav),
+                      ))
                   .toList(),
+              onChanged: (val) => lokalnyStav = val ?? zakazka.stav,
+              decoration: const InputDecoration(
+                labelText: 'Stav',
+                prefixIcon: Icon(Icons.flag),
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: poznamkaController,
+              decoration: const InputDecoration(
+                labelText: 'Poznámka',
+                prefixIcon: Icon(Icons.note),
+                border: OutlineInputBorder(),
+              ),
+              maxLines: 2,
+            ),
+            const SizedBox(height: 12),
+            InkWell(
+              onTap: () async {
+                final vybrany = await showDatePicker(
+                  context: context,
+                  initialDate: DateTime.now(),
+                  firstDate: DateTime.now().subtract(const Duration(days: 365)),
+                  lastDate: DateTime.now().add(const Duration(days: 365 * 5)),
+                );
+                if (vybrany != null) {
+                  terminController.text =
+                      DateFormat('d.M.yyyy').format(vybrany);
+                }
+              },
+              child: IgnorePointer(
+                child: TextField(
+                  controller: terminController,
+                  decoration: const InputDecoration(
+                    labelText: 'Termín dokončenia',
+                    prefixIcon: Icon(Icons.calendar_today),
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+              ),
             ),
           ],
         ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Zrušiť')),
-          ElevatedButton(
-            onPressed: () {
-              setState(() {
-                zakazky[index] = Zakazka(
-                  nazov: zakazka.nazov,
-                  stav: lokalnyStav,
-                  datum: zakazka.datum,
-                  poznamka: poznamkaController.text,
-                  termin: zakazka.termin,
-                  hviezdicka: zakazka.hviezdicka,
-                  dolezita: zakazka.dolezita,
-                );
-              });
-              ulozZakazky();
-              Navigator.pop(ctx);
-            },
-            child: const Text('Uložiť'),
-          ),
-        ],
       ),
-    );
-  }
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(ctx),
+          child: const Text('Zrušiť'),
+        ),
+        ElevatedButton(
+          onPressed: () {
+            setState(() {
+              zakazky[index] = Zakazka(
+                nazov: zakazka.nazov,
+                stav: lokalnyStav,
+                datum: zakazka.datum,
+                poznamka: poznamkaController.text.trim(),
+                termin: terminController.text.trim(),
+                hviezdicka: zakazka.hviezdicka,
+                dolezita: zakazka.dolezita,
+              );
+            });
+            ulozZakazky();
+            Navigator.pop(ctx);
+          },
+          child: const Text('Uložiť'),
+        ),
+      ],
+    ),
+  );
+}
 
   void vymazZakazku(int index) {
     setState(() {
@@ -662,6 +798,21 @@ void initState() {
       return Colors.grey;
     }
   }
+
+String zostavajuciCas(String termin) {
+  if (termin.trim().isEmpty) return 'Bez termínu';
+
+  try {
+    final datum = DateFormat('d.M.yyyy').parse(termin);
+    final rozdiel = datum.difference(DateTime.now()).inDays;
+
+    if (rozdiel > 0) return 'Zostáva $rozdiel dní';
+    if (rozdiel == 0) return 'Termín je dnes';
+    return 'Po termíne (${rozdiel.abs()} dní)';
+  } catch (e) {
+    return 'Neplatný dátum';
+  }
+}
 
   String exportujDoCSV(List<Zakazka> zakazky) {
     final buffer = StringBuffer();
