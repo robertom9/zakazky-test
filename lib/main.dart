@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'package:zakazky_test/notifikacie.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -8,11 +9,18 @@ import 'package:intl/intl.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:csv/csv.dart';
-import 'package:mailer/mailer.dart';
+import 'package:mailer/mailer.dart' as mailer;
 import 'package:mailer/smtp_server.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:timezone/data/latest.dart' as tz;
+import 'package:timezone/timezone.dart' as tz;
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  tz.initializeTimeZones();
+  await NotifikacnaSluzba.inicializuj();
+
   runApp(
     MultiProvider(
       providers: [
@@ -121,6 +129,7 @@ class _ZakazkyAppState extends State<ZakazkyApp> {
   String aktivnyFilter = 'Všetky';
   String vyhladavanieText = '';
   String poleTriedenia = 'termin';
+  String zoradPodla = 'datum'; // alebo 'nazov', 'termin'...
   bool vzostupne = true;
   bool zobrazHoruceLen = false;
   bool upozorneniaAktivne = true;
@@ -374,6 +383,64 @@ onPressed: () {
                 ),
                 onChanged: (val) => setState(() => vyhladavanieText = val.toLowerCase()),
               ),
+const SizedBox(height: 12),
+Row(
+  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+  children: [
+    Row(
+      children: [
+        const Text(
+          'Triediť podľa:',
+          style: TextStyle(fontWeight: FontWeight.w600),
+        ),
+        const SizedBox(width: 8),
+        DropdownButton<String>(
+          value: zoradPodla,
+          items: ['datum', 'nazov', 'termin'].map((kriterium) {
+            return DropdownMenuItem(
+              value: kriterium,
+              child: Text(kriterium),
+            );
+          }).toList(),
+          onChanged: (val) {
+            setState(() {
+              zoradPodla = val!;
+              zoradZakazky();
+            });
+          },
+        ),
+      ],
+    ),
+    Row(
+      children: [
+        IconButton(
+          icon: const Icon(Icons.keyboard_arrow_up),
+          color: Colors.orange,
+          iconSize: 30,
+          tooltip: 'Vzostupne',
+          onPressed: () {
+            setState(() {
+              vzostupne = true;
+              zoradZakazky();
+            });
+          },
+        ),
+        IconButton(
+          icon: const Icon(Icons.keyboard_arrow_down),
+          color: Colors.orange,
+          iconSize: 30,
+          tooltip: 'Zostupne',
+          onPressed: () {
+            setState(() {
+              vzostupne = false;
+              zoradZakazky();
+            });
+          },
+        ),
+      ],
+    ),
+  ],
+),
               const SizedBox(height: 12),
               Expanded(
                 child: zoznam.isEmpty
@@ -514,6 +581,36 @@ bool datumJePoTermine(String termin) {
   }
 }
 
+void zoradZakazky() {
+  setState(() {
+    zakazky.sort((a, b) {
+      Comparable hodnotaA;
+      Comparable hodnotaB;
+
+      switch (zoradPodla) {
+        case 'nazov':
+          hodnotaA = a.nazov.toLowerCase();
+          hodnotaB = b.nazov.toLowerCase();
+          break;
+        case 'datum':
+          hodnotaA = DateFormat('d.M.yyyy').parse(a.datum);
+          hodnotaB = DateFormat('d.M.yyyy').parse(b.datum);
+          break;
+        case 'termin':
+          hodnotaA = DateFormat('d.M.yyyy').parse(a.termin);
+          hodnotaB = DateFormat('d.M.yyyy').parse(b.termin);
+          break;
+        default:
+          return 0;
+      }
+
+      return vzostupne
+          ? hodnotaA.compareTo(hodnotaB)
+          : hodnotaB.compareTo(hodnotaA);
+    });
+  });
+}
+
 void upravitZakazku(int index) {
   final zakazka = zakazky[index];
   final poznamkaController = TextEditingController(text: zakazka.poznamka);
@@ -587,7 +684,7 @@ void upravitZakazku(int index) {
           child: const Text('Zrušiť'),
         ),
         ElevatedButton(
-          onPressed: () {
+          onPressed: () async {
             setState(() {
               zakazky[index] = Zakazka(
                 nazov: zakazka.nazov,
@@ -599,7 +696,23 @@ void upravitZakazku(int index) {
                 dolezita: zakazka.dolezita,
               );
             });
+
             ulozZakazky();
+
+            // 🔔 Notifikácia deň pred termínom
+            try {
+              final terminDT =
+                  DateFormat('d.M.yyyy').parse(terminController.text.trim());
+
+              await NotifikacnaSluzba.naplanujUpozornenie(
+                index, // môžeš nahradiť zakazka.id, ak existuje
+                zakazka.nazov,
+                terminDT,
+              );
+            } catch (e) {
+              debugPrint('Chyba pri plánovaní notifikácie: $e');
+            }
+
             Navigator.pop(ctx);
           },
           child: const Text('Uložiť'),
@@ -673,24 +786,24 @@ void upravitZakazku(int index) {
     await file.writeAsString(obsah);
   }
 
-  Future<void> posliZalohuEmailom(String email) async {
-    final dir = await getApplicationDocumentsDirectory();
-    final subor = File('${dir.path}/zakazky_backup.json');
-    if (!await subor.exists()) return;
+Future<void> posliZalohuEmailom(String email) async {
+  final dir = await getApplicationDocumentsDirectory();
+  final subor = File('${dir.path}/zakazky_backup.json');
+  if (!await subor.exists()) return;
 
-    final username = 'tvojemail@gmail.com';
-    final heslo = 'tvoje_16znakove_app_password';
-    final smtpServer = gmail(username, heslo);
+  final username = 'tvojemail@gmail.com';
+  final heslo = 'tvoje_16znakove_app_password';
+  final smtpServer = gmail(username, heslo);
 
-    final message = Message()
-      ..from = Address(username, 'Zákazková appka')
-      ..recipients.add(email)
-      ..subject = 'Záloha zákaziek'
-      ..text = 'V prílohe je JSON so zákazkami.'
-      ..attachments = [FileAttachment(subor)];
+  final message = mailer.Message()
+    ..from = mailer.Address(username, 'Zákazková appka')
+    ..recipients.add(email)
+    ..subject = 'Záloha zákaziek'
+    ..text = 'V prílohe je JSON so zákazkami.'
+    ..attachments = [mailer.FileAttachment(subor)];
 
-    await send(message, smtpServer);
-  }
+  await mailer.send(message, smtpServer);
+}
 
   Future<void> zazalohujAVysli() async {
     final potvrdene = await showDialog<bool>(
@@ -768,16 +881,18 @@ void upravitZakazku(int index) {
     }
   }
 
-  String formatujInfoZTterminu(String terminText) {
-    final dnes = DateTime.now();
-    final termin = DateTime.tryParse(terminText);
-    if (termin == null) return 'Neplatný termín';
-
+String formatujInfoZTterminu(String terminText) {
+  final dnes = DateTime.now();
+  try {
+    final termin = DateFormat('d.M.yyyy').parse(terminText);
     final rozdiel = termin.difference(dnes).inDays;
     if (rozdiel < 0) return 'Oneskorené (pred ${rozdiel.abs()} ${rozdiel.abs() == 1 ? 'dňom' : 'dňami'})';
     if (rozdiel == 0) return 'Termín dnes';
     return 'Termín za $rozdiel ${rozdiel == 1 ? 'deň' : 'dni'}';
+  } catch (e) {
+    return 'Neplatný termín';
   }
+}
 
   Color getFarbaPodlaStavu(String stav) {
     switch (stav) {
@@ -787,17 +902,17 @@ void upravitZakazku(int index) {
     }
   }
 
-  Color getFarbaOdpocet(String terminText) {
-    try {
-      final termin = DateTime.parse(terminText);
-      final rozdiel = termin.difference(DateTime.now()).inDays;
-      if (rozdiel < 0) return Colors.redAccent;
-      if (rozdiel <= 2) return Colors.orangeAccent;
-      return Colors.greenAccent;
-    } catch (_) {
-      return Colors.grey;
-    }
+Color getFarbaOdpocet(String terminText) {
+  try {
+    final termin = DateFormat('d.M.yyyy').parse(terminText);
+    final rozdiel = termin.difference(DateTime.now()).inDays;
+    if (rozdiel < 0) return Colors.redAccent;
+    if (rozdiel <= 2) return Colors.orangeAccent;
+    return Colors.greenAccent;
+  } catch (_) {
+    return Colors.grey;
   }
+}
 
 String zostavajuciCas(String termin) {
   if (termin.trim().isEmpty) return 'Bez termínu';
