@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'package:zakazky_test/sluzby/triedenie_sluzba.dart';
 import 'package:zakazky_test/notifikacie.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -130,6 +131,7 @@ class _ZakazkyAppState extends State<ZakazkyApp> {
   String vyhladavanieText = '';
   String poleTriedenia = 'termin';
   String zoradPodla = 'datum'; // alebo 'nazov', 'termin'...
+  String vybraneTriedenie = 'termin';
   bool vzostupne = true;
   bool zobrazHoruceLen = false;
   bool upozorneniaAktivne = true;
@@ -137,15 +139,27 @@ class _ZakazkyAppState extends State<ZakazkyApp> {
 @override
 void initState() {
   super.initState();
+
+Future.wait([
+  TriedenieSluzba.nacitaj(),      // Future<String>
+  TriedenieSluzba.nacitajSmer(), // Future<bool>
+]).then((hodnoty) {
+  final typ = hodnoty[0] as String;
+  final smer = hodnoty[1] as bool;
+
+  setState(() {
+    zoradPodla = typ;
+    vzostupne = smer;
+  });
+
   nacitajZakazky();
 
   WidgetsBinding.instance.addPostFrameCallback((_) {
     final horuce = zakazky.where((z) => getRozdielDni(z.termin) <= 0).toList();
-    if (!upozorneniaAktivne || horuce.isEmpty) return;
+    if (!upozorneniaAktivne || horuce.isEmpty || !mounted) return;
 
     HapticFeedback.mediumImpact();
     Future.delayed(const Duration(milliseconds: 200), () {
-      if (!mounted) return;
       showDialog(
         context: context,
         builder: (ctx) => AlertDialog(
@@ -161,6 +175,7 @@ void initState() {
       );
     });
   });
+});
 }
 
   @override
@@ -402,11 +417,14 @@ Row(
               child: Text(kriterium),
             );
           }).toList(),
-          onChanged: (val) {
+          onChanged: (val) async {
             setState(() {
               zoradPodla = val!;
               zoradZakazky();
             });
+
+            // 🔐 Zapíš nastavenie do pamäte
+            await TriedenieSluzba.uloz(val!);
           },
         ),
       ],
@@ -418,11 +436,14 @@ Row(
           color: Colors.orange,
           iconSize: 30,
           tooltip: 'Vzostupne',
-          onPressed: () {
+          onPressed: () async {
             setState(() {
               vzostupne = true;
               zoradZakazky();
             });
+
+            // Voliteľne: ulož aj smer triedenia
+            // await TriedenieSluzba.ulozSmer(true);
           },
         ),
         IconButton(
@@ -430,11 +451,14 @@ Row(
           color: Colors.orange,
           iconSize: 30,
           tooltip: 'Zostupne',
-          onPressed: () {
+          onPressed: () async {
             setState(() {
               vzostupne = false;
               zoradZakazky();
             });
+
+            // Voliteľne: ulož aj smer triedenia
+            // await TriedenieSluzba.ulozSmer(false);
           },
         ),
       ],
@@ -584,25 +608,36 @@ bool datumJePoTermine(String termin) {
 void zoradZakazky() {
   setState(() {
     zakazky.sort((a, b) {
-      Comparable hodnotaA;
-      Comparable hodnotaB;
+      Comparable? hodnotaA;
+      Comparable? hodnotaB;
 
-      switch (zoradPodla) {
-        case 'nazov':
-          hodnotaA = a.nazov.toLowerCase();
-          hodnotaB = b.nazov.toLowerCase();
-          break;
-        case 'datum':
-          hodnotaA = DateFormat('d.M.yyyy').parse(a.datum);
-          hodnotaB = DateFormat('d.M.yyyy').parse(b.datum);
-          break;
-        case 'termin':
-          hodnotaA = DateFormat('d.M.yyyy').parse(a.termin);
-          hodnotaB = DateFormat('d.M.yyyy').parse(b.termin);
-          break;
-        default:
-          return 0;
+      try {
+        switch (zoradPodla) {
+          case 'nazov':
+            hodnotaA = a.nazov.toLowerCase();
+            hodnotaB = b.nazov.toLowerCase();
+            break;
+
+          case 'datum':
+            hodnotaA = DateFormat('d.M.yyyy').parse(a.datum);
+            hodnotaB = DateFormat('d.M.yyyy').parse(b.datum);
+            break;
+
+          case 'termin':
+            hodnotaA = DateFormat('d.M.yyyy').parse(a.termin);
+            hodnotaB = DateFormat('d.M.yyyy').parse(b.termin);
+            break;
+
+          default:
+            return 0;
+        }
+      } catch (e) {
+        // Ak nastane chyba (napr. neplatný formát), zorad podľa názvu ako fallback
+        hodnotaA = a.nazov.toLowerCase();
+        hodnotaB = b.nazov.toLowerCase();
       }
+
+      if (hodnotaA == null || hodnotaB == null) return 0;
 
       return vzostupne
           ? hodnotaA.compareTo(hodnotaB)
