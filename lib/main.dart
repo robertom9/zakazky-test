@@ -21,36 +21,69 @@ void main() async {
   tz.initializeTimeZones();
   await NotifikacnaSluzba.inicializuj();
 
+  // Vytvoríme ThemeProvider a načítame uložený režim
+  final themeProvider = ThemeProvider();
+  await themeProvider.nacitajRezim();
+
   runApp(
     MultiProvider(
       providers: [
-        ChangeNotifierProvider(create: (_) => ThemeProvider()),
+        ChangeNotifierProvider<ThemeProvider>.value(value: themeProvider),
         ChangeNotifierProvider(create: (_) => RezimProvider()),
       ],
-      child: MaterialApp(
-        title: 'Zákazky',
-        theme: ThemeData.light(),
-        darkTheme: ThemeData.dark(),
-        themeMode: ThemeMode.system,
-        supportedLocales: const [Locale('sk'), Locale('en')],
-        localizationsDelegates: const [
-          GlobalMaterialLocalizations.delegate,
-          GlobalWidgetsLocalizations.delegate,
-          GlobalCupertinoLocalizations.delegate,
-        ],
-        home: const ZakazkyApp(),
-      ),
+      child: const ZakazkyAppWrapper(),
     ),
   );
 }
 
-class ThemeProvider with ChangeNotifier {
+class ZakazkyAppWrapper extends StatelessWidget {
+  const ZakazkyAppWrapper({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final themeProvider = Provider.of<ThemeProvider>(context);
+
+    return MaterialApp(
+      title: 'Zákazky',
+      theme: ThemeData.light(),
+      darkTheme: ThemeData.dark(),
+      themeMode: themeProvider.themeMode,
+      supportedLocales: const [Locale('sk'), Locale('en')],
+      localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
+      home: const ZakazkyApp(),
+    );
+  }
+}
+
+class ThemeProvider extends ChangeNotifier {
   ThemeMode _themeMode = ThemeMode.system;
+
   ThemeMode get themeMode => _themeMode;
 
-  void toggleTheme(bool dark) {
-    _themeMode = dark ? ThemeMode.dark : ThemeMode.light;
+  void toggleTheme(bool isDark) {
+    _themeMode = isDark ? ThemeMode.dark : ThemeMode.light;
     notifyListeners();
+    ulozRezim(isDark);
+  }
+
+  void nastavZPamate(bool isDark) {
+    _themeMode = isDark ? ThemeMode.dark : ThemeMode.light;
+    notifyListeners();
+  }
+
+  Future<void> nacitajRezim() async {
+    final prefs = await SharedPreferences.getInstance();
+    final ulozeny = prefs.getBool('jeTmavyRezim') ?? false;
+    nastavZPamate(ulozeny);
+  }
+
+  Future<void> ulozRezim(bool isDark) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('jeTmavyRezim', isDark);
   }
 }
 
@@ -92,25 +125,49 @@ class Zakazka {
     required this.dolezita,
   });
 
-  Map<String, dynamic> toJson() => {
-        'nazov': nazov,
-        'stav': stav,
-        'datum': datum,
-        'poznamka': poznamka,
-        'termin': termin,
-        'hviezdicka': hviezdicka,
-        'dolezita': dolezita,
-      };
+  Zakazka copyWith({
+    String? nazov,
+    String? stav,
+    String? datum,
+    String? poznamka,
+    String? termin,
+    bool? hviezdicka,
+    bool? dolezita,
+  }) {
+    return Zakazka(
+      nazov: nazov ?? this.nazov,
+      stav: stav ?? this.stav,
+      datum: datum ?? this.datum,
+      poznamka: poznamka ?? this.poznamka,
+      termin: termin ?? this.termin,
+      hviezdicka: hviezdicka ?? this.hviezdicka,
+      dolezita: dolezita ?? this.dolezita,
+    );
+  }
 
-  factory Zakazka.fromJson(Map<String, dynamic> json) => Zakazka(
-        nazov: json['nazov'] ?? '',
-        stav: json['stav'] ?? '',
-        datum: json['datum'] ?? '',
-        poznamka: json['poznamka'] ?? '',
-        termin: json['termin'] ?? '',
-        hviezdicka: json['hviezdicka'] ?? false,
-        dolezita: json['dolezita'] ?? false,
-      );
+  factory Zakazka.fromJson(Map<String, dynamic> json) {
+    return Zakazka(
+      nazov: json['nazov'] ?? '',
+      stav: json['stav'] ?? '',
+      datum: json['datum'] ?? '',
+      poznamka: json['poznamka'] ?? '',
+      termin: json['termin'] ?? '',
+      hviezdicka: json['hviezdicka'] ?? false,
+      dolezita: json['dolezita'] ?? false,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'nazov': nazov,
+      'stav': stav,
+      'datum': datum,
+      'poznamka': poznamka,
+      'termin': termin,
+      'hviezdicka': hviezdicka,
+      'dolezita': dolezita,
+    };
+  }
 }
 
 class ZakazkyApp extends StatefulWidget {
@@ -129,39 +186,51 @@ class _ZakazkyAppState extends State<ZakazkyApp> {
   String aktivnyFilter = 'Všetky';
   String vyhladavanieText = '';
   String poleTriedenia = 'termin';
-  String zoradPodla = 'datum'; // alebo 'nazov', 'termin'...
+  String zoradPodla = 'datum';
   bool vzostupne = true;
   bool zobrazHoruceLen = false;
   bool upozorneniaAktivne = true;
 
-@override
-void initState() {
-  super.initState();
-  nacitajZakazky();
+  @override
+  void initState() {
+    super.initState();
+    nacitajZakazky();
+    nacitajPreferovaneTriedenie();
 
-  WidgetsBinding.instance.addPostFrameCallback((_) {
-    final horuce = zakazky.where((z) => getRozdielDni(z.termin) <= 0).toList();
-    if (!upozorneniaAktivne || horuce.isEmpty) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final horuce = zakazky.where((z) => getRozdielDni(z.termin) <= 0).toList();
+      if (!upozorneniaAktivne || horuce.isEmpty) return;
 
-    HapticFeedback.mediumImpact();
-    Future.delayed(const Duration(milliseconds: 200), () {
-      if (!mounted) return;
-      showDialog(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('⏰ Po termíne'),
-          content: Text('Máš ${horuce.length} zákaziek po termíne.'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('OK'),
-            ),
-          ],
-        ),
-      );
+      HapticFeedback.mediumImpact();
+      Future.delayed(const Duration(milliseconds: 200), () {
+        if (!mounted) return;
+        showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('⏰ Po termíne'),
+            content: Text('Máš ${horuce.length} zákaziek po termíne.'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('OK'),
+              ),
+            ],
+          ),
+        );
+      });
     });
-  });
-}
+  }
+
+  void nacitajPreferovaneTriedenie() async {
+    SharedPreferences prefs = await SharedPreferences.getInstance();
+    final ulozene = prefs.getString('preferovaneTriedenie');
+    if (ulozene != null) {
+      setState(() {
+        zoradPodla = ulozene;
+        zoradZakazky();
+      });
+    }
+  }
 
   @override
   void dispose() {
@@ -171,146 +240,362 @@ void initState() {
     super.dispose();
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final themeProvider = Provider.of<ThemeProvider>(context);
-    final rezim = Provider.of<RezimProvider>(context);
-    final isDark = themeProvider.themeMode == ThemeMode.dark;
-    final zoznam = vyfiltrovaneZakazky();
-    final stats = vypocitajStatistiky();
-    final jeTmavyRezim = Theme.of(context).brightness == Brightness.dark;
+@override
+Widget build(BuildContext context) {
+  final themeProvider = Provider.of<ThemeProvider>(context);
+  final rezim = Provider.of<RezimProvider>(context);
+  final isDark = themeProvider.themeMode == ThemeMode.dark;
 
-      return Scaffold(
-        appBar: AppBar(
-          title: const Text('Zákazky'),
-          actions: [
-            IconButton(
-              icon: Icon(
-                rezim.tichyRezim ? Icons.volume_off : Icons.vibration,
-                color: rezim.tichyRezim ? Colors.grey : Colors.blue,
+  final zoznam = vyfiltrovaneZakazky();       // filtrované zákazky
+  final stats = vypocitajStatistiky();        // mapové štatistiky: Čaká, V riešení, Hotovo
+
+  final int poTermine = zoznam.where((z) => datumJePoTermine(z.termin)).length;
+  final int bliziSa = zoznam.where((z) => datumJeDo2Dni(z.termin)).length;
+  final int bezTerminu = zoznam.where((z) => z.termin.trim().isEmpty).length;
+
+  final jeTmavyRezim = Theme.of(context).brightness == Brightness.dark;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Zákazky'),
+        actions: [
+          IconButton(
+            icon: Icon(
+              rezim.tichyRezim ? Icons.volume_off : Icons.vibration,
+              color: rezim.tichyRezim ? Colors.grey : Colors.blue,
+            ),
+            onPressed: () => rezim.toggleTichy(),
+            tooltip: 'Tichý režim',
+          ),
+          IconButton(
+            icon: Icon(
+              upozorneniaAktivne ? Icons.notifications_active : Icons.notifications_off,
+              color: upozorneniaAktivne ? Colors.orange : Colors.grey,
+            ),
+            onPressed: () => setState(() => upozorneniaAktivne = !upozorneniaAktivne),
+            tooltip: 'Upozornenia',
+          ),
+          IconButton(
+            icon: const Icon(Icons.settings),
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const SettingsScreen()),
+              );
+            },
+          ),
+          PopupMenuButton<String>(
+            tooltip: 'Nastavenia a akcie',
+            onSelected: (value) async {
+              switch (value) {
+                case 'export': exportovatZakazky(); break;
+                case 'import': importovatZakazky(); break;
+                case 'zalohuj': await ulozZalohuDoSuboru(); break;
+                case 'obnov': nacitajZakazky(); break;
+                case 'email': await zazalohujAVysli(); break;
+                case 'tema':
+                     themeProvider.toggleTheme(!isDark);
+                  break;
+                case 'import_csv': await importujZakazkyZCSV(); break;
+                case 'share_csv': await ulozCSVASdielaj(zakazky); break;
+                case 'export_csv':
+                  final csv = exportujDoCSV(zakazky);
+                  await ulozCSV(csv);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Zákazky uložené do zakazky_export.csv')),
+                  );
+                  break;
+              }
+            },
+            itemBuilder: (context) => [
+              const PopupMenuItem(
+                value: 'export',
+                child: ListTile(
+                  leading: Icon(Icons.upload_file, color: Colors.lightBlue),
+                  title: Text('Export do schránky'),
+                ),
               ),
-              onPressed: () => rezim.toggleTichy(),
-              tooltip: 'Tichý režim',
-            ),
-            IconButton(
-              icon: Icon(
-                upozorneniaAktivne ? Icons.notifications_active : Icons.notifications_off,
-                color: upozorneniaAktivne ? Colors.orange : Colors.grey,
+              const PopupMenuItem(
+                value: 'import',
+                child: ListTile(
+                  leading: Icon(Icons.download, color: Colors.teal),
+                  title: Text('Import zo schránky'),
+                ),
               ),
-              onPressed: () => setState(() => upozorneniaAktivne = !upozorneniaAktivne),
-              tooltip: 'Upozornenia',
-            ),
-            IconButton(
-              icon: const Icon(Icons.add),
-              tooltip: 'Pridať zákazku',
-              onPressed: pridajZakazku,
-            ),
-            IconButton(
-              icon: const Icon(Icons.settings),
+              const PopupMenuItem(
+                value: 'zalohuj',
+                child: ListTile(
+                  leading: Icon(Icons.save_alt, color: Colors.green),
+                  title: Text('Zálohovať do súboru'),
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'obnov',
+                child: ListTile(
+                  leading: Icon(Icons.restore, color: Colors.indigo),
+                  title: Text('Obnov zo zálohy'),
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'email',
+                child: ListTile(
+                  leading: Icon(Icons.email, color: Colors.deepOrange),
+                  title: Text('Zálohuj a pošli e-mailom'),
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'export_csv',
+                child: ListTile(
+                  leading: Icon(Icons.file_download, color: Colors.blueGrey),
+                  title: Text('Export do CSV'),
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'share_csv',
+                child: ListTile(
+                  leading: Icon(Icons.share, color: Colors.blue),
+                  title: Text('Zdieľať zákazky (CSV)'),
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'import_csv',
+                child: ListTile(
+                  leading: Icon(Icons.upload_file, color: Colors.purple),
+                  title: Text('Importuj zákazky z CSV'),
+                ),
+              ),
+              const PopupMenuDivider(),
+              const PopupMenuItem(
+                value: 'tema',
+                child: ListTile(
+                  leading: Icon(Icons.brightness_6),
+                  title: Text('Prepnúť tému'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+      body: buildBody(context, zoznam, stats, poTermine, bliziSa, bezTerminu),
+    );
+  }
+
+Widget buildBody(
+  BuildContext context,
+  List<Zakazka> zoznam,
+  Map<String, int> stats,
+  int poTermine,
+  int bliziSa,
+  int bezTerminu,
+) {
+
+  return Padding(
+    padding: const EdgeInsets.all(12),
+    child: Column(
+      children: [
+        ElevatedButton.icon(
+          onPressed: pridajZakazku,
+          icon: const Icon(Icons.add),
+          label: const Text('Pridať zákazku'),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: Theme.of(context).brightness == Brightness.dark
+                ? Colors.tealAccent[700]
+                : Theme.of(context).colorScheme.primary,
+            foregroundColor: Colors.white,
+            elevation: 6,
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+            textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          ),
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: vyhladavanieController,
+          decoration: InputDecoration(
+            hintText: 'Vyhľadaj zákazku...',
+            prefixIcon: const Icon(Icons.search),
+            suffixIcon: IconButton(
+              icon: const Icon(Icons.clear),
               onPressed: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (context) => const SettingsScreen()),
-                );
+                vyhladavanieController.clear();
+                setState(() => vyhladavanieText = '');
               },
             ),
-            PopupMenuButton<String>(
-              tooltip: 'Nastavenia a akcie',
-              onSelected: (value) async {
-                switch (value) {
-                  case 'export': exportovatZakazky(); break;
-                  case 'import': importovatZakazky(); break;
-                  case 'zalohuj': ulozZalohuDoSuboru(); break;
-                  case 'obnov': nacitajZakazky(); break;
-                  case 'email': zazalohujAVysli(); break;
-                  case 'tema': themeProvider.toggleTheme(!isDark); break;
-                  case 'import_csv': await importujZakazkyZCSV(); break;
-                  case 'share_csv': await ulozCSVASdielaj(zakazky); break;
-                  case 'export_csv':
-                    final csv = exportujDoCSV(zakazky);
-                    await ulozCSV(csv);
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Zákazky uložené do zakazky_export.csv')),
+          ),
+          onChanged: (val) => setState(() => vyhladavanieText = val.toLowerCase()),
+        ),
+        const SizedBox(height: 12),
+
+        // ✅ Tu už môžeš použiť premennú `stats`
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: stats.entries.map((e) {
+            return Chip(
+              label: Text('${e.key}: ${e.value}'),
+              backgroundColor: Theme.of(context).brightness == Brightness.dark
+                  ? Colors.grey[800]
+                  : Colors.grey[300],
+              labelStyle: const TextStyle(fontWeight: FontWeight.w600),
+            );
+          }).toList(),
+        ),
+const SizedBox(height: 12),
+
+Wrap(
+  spacing: 8,
+  runSpacing: 8,
+  children: [
+    Chip(
+      label: Text('Po termíne: $poTermine'),
+      backgroundColor: Colors.red.shade100,
+      labelStyle: const TextStyle(fontWeight: FontWeight.w600),
+    ),
+    Chip(
+      label: Text('Do 2 dní: $bliziSa'),
+      backgroundColor: Colors.orange.shade100,
+      labelStyle: const TextStyle(fontWeight: FontWeight.w600),
+    ),
+    Chip(
+      label: Text('Bez termínu: $bezTerminu'),
+      backgroundColor: Theme.of(context).brightness == Brightness.dark
+          ? Colors.grey[800]
+          : Colors.grey[300],
+      labelStyle: const TextStyle(fontWeight: FontWeight.w600),
+    ),
+  ],
+),
+
+        const SizedBox(height: 12),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Row(
+              children: [
+                const Text('Triediť podľa:'),
+                const SizedBox(width: 8),
+                DropdownButton<String>(
+                  value: zoradPodla,
+                  items: ['datum', 'nazov', 'termin'].map((kriterium) {
+                    return DropdownMenuItem(
+                      value: kriterium,
+                      child: Text(kriterium),
                     );
-                    break;
-                }
-              },
-              itemBuilder: (context) => [
-                const PopupMenuItem(
-                  value: 'export',
-                  child: ListTile(
-                    leading: Icon(Icons.upload_file, color: Colors.lightBlue),
-                    title: Text('Export do schránky'),
-                  ),
+                  }).toList(),
+                  onChanged: (val) async {
+                    setState(() {
+                      zoradPodla = val!;
+                      zoradZakazky();
+                    });
+                    SharedPreferences prefs = await SharedPreferences.getInstance();
+                    await prefs.setString('preferovaneTriedenie', val!);
+                  },
                 ),
-                const PopupMenuItem(
-                  value: 'import',
-                  child: ListTile(
-                    leading: Icon(Icons.download, color: Colors.teal),
-                    title: Text('Import zo schránky'),
-                  ),
+              ],
+            ),
+            Row(
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.keyboard_arrow_up),
+                  onPressed: () {
+                    setState(() {
+                      vzostupne = true;
+                      zoradZakazky();
+                    });
+                  },
                 ),
-                const PopupMenuItem(
-                  value: 'zalohuj',
-                  child: ListTile(
-                    leading: Icon(Icons.save_alt, color: Colors.green),
-                    title: Text('Zálohovať do súboru'),
-                  ),
-                ),
-                const PopupMenuItem(
-                  value: 'obnov',
-                  child: ListTile(
-                    leading: Icon(Icons.restore, color: Colors.indigo),
-                    title: Text('Obnov zo zálohy'),
-                  ),
-                ),
-                const PopupMenuItem(
-                  value: 'email',
-                  child: ListTile(
-                    leading: Icon(Icons.email, color: Colors.deepOrange),
-                    title: Text('Zálohuj a pošli e-mailom'),
-                  ),
-                ),
-                const PopupMenuItem(
-                  value: 'export_csv',
-                  child: ListTile(
-                    leading: Icon(Icons.file_download, color: Colors.blueGrey),
-                    title: Text('Export do CSV'),
-                  ),
-                ),
-                const PopupMenuItem(
-                  value: 'share_csv',
-                  child: ListTile(
-                    leading: Icon(Icons.share, color: Colors.blue),
-                    title: Text('Zdieľať zákazky (CSV)'),
-                  ),
-                ),
-                const PopupMenuItem(
-                  value: 'import_csv',
-                  child: ListTile(
-                    leading: Icon(Icons.upload_file, color: Colors.purple),
-                    title: Text('Importuj zákazky z CSV'),
-                  ),
-                ),
-                const PopupMenuDivider(),
-                const PopupMenuItem(
-                  value: 'tema',
-                  child: ListTile(
-                    leading: Icon(Icons.brightness_6),
-                    title: Text('Prepnúť tému'),
-                  ),
+                IconButton(
+                  icon: const Icon(Icons.keyboard_arrow_down),
+                  onPressed: () {
+                    setState(() {
+                      vzostupne = false;
+                      zoradZakazky();
+                    });
+                  },
                 ),
               ],
             ),
           ],
         ),
-        body: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Column(
-            children: [
-const SizedBox(height: 12),
-ElevatedButton.icon(
-onPressed: () {
+        const SizedBox(height: 12),
+        Expanded(
+          child: zoznam.isEmpty
+              ? const Center(child: Text('Žiadne zákazky'))
+              : ListView.builder(
+                  itemCount: zoznam.length,
+                  itemBuilder: (context, index) {
+                    final z = zoznam[index];
+                    return Card(
+                      child: ListTile(
+                        onTap: () => upravitZakazku(index),
+                       leading: CircleAvatar(
+                         radius: 18,
+                         backgroundColor: datumJePoTermine(z.termin)
+                             ? Colors.red // 🔴 Po termíne = červená guľka
+                             : getFarbaPodlaStavu(z.stav),
+                         child: const SizedBox.shrink(), // žiadna ikona
+                       ),
+                        title: Text(z.nazov),
+                          subtitle: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            if (z.poznamka.isNotEmpty) Text(z.poznamka),
+
+                            if (datumJePoTermine(z.termin))
+                              const Text(
+                                'Po termíne',
+                                style: TextStyle(
+                                  color: Colors.red,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+
+                            // 🔽 Popis stavu s farebným textom
+                            Text(
+                              z.stav,
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: getFarbaPodlaStavu(z.stav),
+                              ),
+                            ),
+
+                            Text(z.datum),
+                            if (z.termin.isNotEmpty)
+                               Text(formatujInfoZTterminu(z.termin)),
+                          ],
+                        ),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            IconButton(
+                              icon: Icon(
+                                z.dolezita ? Icons.star : Icons.star_border,
+                                color: z.dolezita ? Colors.orange : Colors.grey,
+                              ),
+                              onPressed: () {
+                                setState(() {
+                                  zakazky[index] = z.copyWith(dolezita: !z.dolezita);
+                                });
+                                ulozZakazky();
+                              },
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.delete, color: Colors.red),
+                              onPressed: () => vymazZakazku(index),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+        ),
+      ],
+    ),
+  );
+}
+
+void pridajZakazku() {
   final novyController = TextEditingController();
 
   showDialog(
@@ -338,7 +623,7 @@ onPressed: () {
 
             final nova = Zakazka(
               nazov: text,
-              stav: 'Čaká', // ← automaticky nastavíme
+              stav: 'Čaká',
               datum: DateFormat('d.M.yyyy').format(DateTime.now()),
               poznamka: '',
               termin: '',
@@ -355,260 +640,52 @@ onPressed: () {
       ],
     ),
   );
-},
-  icon: const Icon(Icons.add),
-  label: const Text('Pridať zákazku'),
-  style: ElevatedButton.styleFrom(
-    backgroundColor: Theme.of(context).colorScheme.primary,
-    foregroundColor: Theme.of(context).colorScheme.onPrimary,
-    elevation: 6,
-    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-    textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-  ),
-),
-              const SizedBox(height: 12),
-              TextField(
-                controller: vyhladavanieController,
-                decoration: InputDecoration(
-                  hintText: '🔍 Vyhľadaj zákazku...',
-                  prefixIcon: const Icon(Icons.search),
-                  suffixIcon: IconButton(
-                    icon: const Icon(Icons.clear),
-                    onPressed: () {
-                      vyhladavanieController.clear();
-                      setState(() => vyhladavanieText = '');
-                    },
-                  ),
-                ),
-                onChanged: (val) => setState(() => vyhladavanieText = val.toLowerCase()),
-              ),
-const SizedBox(height: 12),
-Row(
-  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-  children: [
-    Row(
-      children: [
-        const Text(
-          'Triediť podľa:',
-          style: TextStyle(fontWeight: FontWeight.w600),
-        ),
-        const SizedBox(width: 8),
-        DropdownButton<String>(
-          value: zoradPodla,
-          items: ['datum', 'nazov', 'termin'].map((kriterium) {
-            return DropdownMenuItem(
-              value: kriterium,
-              child: Text(kriterium),
-            );
-          }).toList(),
-          onChanged: (val) {
-            setState(() {
-              zoradPodla = val!;
-              zoradZakazky();
-            });
-          },
-        ),
-      ],
-    ),
-    Row(
-      children: [
-        IconButton(
-          icon: const Icon(Icons.keyboard_arrow_up),
-          color: Colors.orange,
-          iconSize: 30,
-          tooltip: 'Vzostupne',
-          onPressed: () {
-            setState(() {
-              vzostupne = true;
-              zoradZakazky();
-            });
-          },
-        ),
-        IconButton(
-          icon: const Icon(Icons.keyboard_arrow_down),
-          color: Colors.orange,
-          iconSize: 30,
-          tooltip: 'Zostupne',
-          onPressed: () {
-            setState(() {
-              vzostupne = false;
-              zoradZakazky();
-            });
-          },
-        ),
-      ],
-    ),
-  ],
-),
-              const SizedBox(height: 12),
-              Expanded(
-                child: zoznam.isEmpty
-                    ? const Center(child: Text('Žiadne zákazky'))
-                    : ListView.builder(
-                        itemCount: zoznam.length,
-                        itemBuilder: (context, index) {
-                          final z = zoznam[index];
-                          return Card(
-                            margin: const EdgeInsets.symmetric(vertical: 6),
-                            child: ListTile(
-                              onTap: () => upravitZakazku(index),
-                              leading: CircleAvatar(
-                                backgroundColor: getFarbaPodlaStavu(z.stav),
-                                child: const Icon(Icons.build, color: Colors.white),
-                              ),
-                              title: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    z.nazov,
-                                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Chip(
-                                    label: Text(z.stav),
-                                    backgroundColor: getFarbaPodlaStavu(z.stav),
-                                    labelStyle: const TextStyle(color: Colors.white),
-                                    visualDensity: VisualDensity.compact,
-                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 0),
-                                  ),
-                                ],
-                              ),
-                              subtitle: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  if (z.poznamka.isNotEmpty) Text(z.poznamka),
-                                  Text(
-                                    z.datum,
-                                    style: const TextStyle(fontSize: 12, color: Colors.grey),
-                                  ),
-                                  if (z.termin.isNotEmpty && DateTime.tryParse(z.termin) != null)
-Chip(
-  label: Text(zostavajuciCas(z.termin)),
-  backgroundColor: z.termin.trim().isEmpty
-      ? Colors.grey
-      : datumJePoTermine(z.termin)
-          ? Colors.redAccent
-          : Colors.greenAccent,
-  labelStyle: const TextStyle(color: Colors.white),
-  visualDensity: VisualDensity.compact,
-  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 0),
-),
-
-                                    Text(
-                                      formatujInfoZTterminu(z.termin),
-                                      style: TextStyle(
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.bold,
-                                        color: getFarbaOdpocet(z.termin),
-                                      ),
-                                    ),
-                                ],
-                              ),
-                              trailing: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  IconButton(
-                                    icon: Icon(
-                                      z.dolezita ? Icons.star : Icons.star_border,
-                                      color: z.dolezita ? Colors.orange : Colors.grey,
-                                    ),
-                                    tooltip: 'Označiť ako dôležité',
-                                    onPressed: () {
-                                      setState(() {
-                                        zakazky[index] = Zakazka(
-                                          nazov: z.nazov,
-                                          stav: z.stav,
-                                          datum: z.datum,
-                                          poznamka: z.poznamka,
-                                          termin: z.termin,
-                                          hviezdicka: z.hviezdicka,
-                                          dolezita: !z.dolezita,
-                                        );
-                                      });
-                                      ulozZakazky();
-                                    },
-                                  ),
-                                  IconButton(
-                                    icon: const Icon(Icons.delete, color: Colors.red),
-                                    tooltip: 'Vymazať zákazku',
-                                    onPressed: () => vymazZakazku(index),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          );
-                        },
-                      ),
-              ),
-            ],
-          ),
-        ),
-      );
-  }
-
-  void pridajZakazku() {
-    final text = controller.text.trim();
-    if (text.isEmpty) return;
-
-    final nova = Zakazka(
-      nazov: text,
-      stav: vybranyStav,
-      datum: DateFormat('d.M.yyyy').format(DateTime.now()),
-      poznamka: '',
-      termin: '',
-      hviezdicka: false,
-      dolezita: false,
-    );
-
-    setState(() {
-      zakazky.add(nova);
-      controller.clear();
-    });
-
-    ulozZakazky();
-  }
+}
 
 bool datumJePoTermine(String termin) {
   if (termin.trim().isEmpty) return false;
-
   try {
     final datum = DateFormat('d.M.yyyy').parse(termin);
     return datum.isBefore(DateTime.now());
   } catch (e) {
-    debugPrint('Neplatný termín: $termin');
+    return false;
+  }
+}
+
+bool datumJeDo2Dni(String termin) {
+  if (termin.trim().isEmpty) return false;
+  try {
+    final datum = DateFormat('d.M.yyyy').parse(termin);
+    final dnes = DateTime.now();
+    final rozdiel = datum.difference(dnes).inDays;
+    return rozdiel >= 0 && rozdiel <= 2;
+  } catch (e) {
     return false;
   }
 }
 
 void zoradZakazky() {
-  setState(() {
-    zakazky.sort((a, b) {
-      Comparable hodnotaA;
-      Comparable hodnotaB;
-
-      switch (zoradPodla) {
-        case 'nazov':
-          hodnotaA = a.nazov.toLowerCase();
-          hodnotaB = b.nazov.toLowerCase();
-          break;
-        case 'datum':
-          hodnotaA = DateFormat('d.M.yyyy').parse(a.datum);
-          hodnotaB = DateFormat('d.M.yyyy').parse(b.datum);
-          break;
-        case 'termin':
-          hodnotaA = DateFormat('d.M.yyyy').parse(a.termin);
-          hodnotaB = DateFormat('d.M.yyyy').parse(b.termin);
-          break;
-        default:
-          return 0;
-      }
-
-      return vzostupne
-          ? hodnotaA.compareTo(hodnotaB)
-          : hodnotaB.compareTo(hodnotaA);
-    });
+  zakazky.sort((a, b) {
+    switch (zoradPodla) {
+      case 'nazov':
+        return a.nazov.compareTo(b.nazov);
+      case 'termin':
+        final tA = parseTermin(a.termin);
+        final tB = parseTermin(b.termin);
+        if (tA == null || tB == null) return 0;
+        return tA.compareTo(tB);
+      case 'datum':
+      default:
+        final dA = parseTermin(a.datum);
+        final dB = parseTermin(b.datum);
+        if (dA == null || dB == null) return 0;
+        return dA.compareTo(dB);
+    }
   });
+
+  if (!vzostupne) {
+    zakazky = zakazky.reversed.toList();
+  }
 }
 
 void upravitZakazku(int index) {
@@ -894,13 +971,14 @@ String formatujInfoZTterminu(String terminText) {
   }
 }
 
-  Color getFarbaPodlaStavu(String stav) {
-    switch (stav) {
-      case 'V riešení': return Colors.orange;
-      case 'Hotovo': return Colors.green;
-      case 'Čaká': default: return Colors.grey;
-    }
+Color getFarbaPodlaStavu(String stav) {
+  switch (stav) {
+    case 'V riešení': return Colors.orange;
+    case 'Hotovo': return Colors.green;
+    case 'Čaká': return Colors.blue[600]!;
+    default: return Colors.grey;
   }
+}
 
 Color getFarbaOdpocet(String terminText) {
   try {
@@ -947,6 +1025,31 @@ String zostavajuciCas(String termin) {
     return buffer.toString();
   }
 
+String bezDiakritiky(String vstup) {
+  const diakritika = {
+    'á': 'a', 'ä': 'a', 'č': 'c', 'ď': 'd', 'é': 'e', 'ě': 'e',
+    'í': 'i', 'ĺ': 'l', 'ľ': 'l', 'ň': 'n', 'ó': 'o', 'ô': 'o',
+    'ŕ': 'r', 'š': 's', 'ť': 't', 'ú': 'u', 'ý': 'y', 'ž': 'z',
+    'Á': 'A', 'Ä': 'A', 'Č': 'C', 'Ď': 'D', 'É': 'E', 'Ě': 'E',
+    'Í': 'I', 'Ĺ': 'L', 'Ľ': 'L', 'Ň': 'N', 'Ó': 'O', 'Ô': 'O',
+    'Ŕ': 'R', 'Š': 'S', 'Ť': 'T', 'Ú': 'U', 'Ý': 'Y', 'Ž': 'Z',
+  };
+
+  return vstup.split('').map((c) => diakritika[c] ?? c).join();
+}
+
+DateTime? parseTermin(String vstup) {
+  try {
+    return DateFormat('dd.MM.yyyy').parseStrict(vstup);
+  } catch (_) {
+    try {
+      return DateFormat('d.M.yyyy').parseStrict(vstup);
+    } catch (_) {
+      return null;
+    }
+  }
+}
+
   Future<void> ulozCSV(String csvData) async {
     final dir = await getApplicationDocumentsDirectory();
     final file = File('${dir.path}/zakazky_export.csv');
@@ -989,25 +1092,49 @@ String zostavajuciCas(String termin) {
     );
   }
 
-  List<Zakazka> vyfiltrovaneZakazky() {
-    var vysledok = [...zakazky];
+List<Zakazka> vyfiltrovaneZakazky() {
+  var vysledok = [...zakazky];
 
-    if (aktivnyFilter != 'Všetky') {
-      vysledok = vysledok.where((z) => z.stav == aktivnyFilter).toList();
-    }
-
-    if (zobrazHoruceLen) {
-      vysledok = vysledok.where((z) => getRozdielDni(z.termin) <= 0).toList();
-    }
-
-    if (vyhladavanieText.isNotEmpty) {
-      vysledok = vysledok
-          .where((z) =>
-              z.nazov.toLowerCase().contains(vyhladavanieText) ||
-              z.poznamka.toLowerCase().contains(vyhladavanieText))
-          .toList();
-    }
-
-    return vysledok;
+  if (aktivnyFilter != 'Všetky') {
+    vysledok = vysledok.where((z) => z.stav == aktivnyFilter).toList();
   }
+
+  if (zobrazHoruceLen) {
+    vysledok = vysledok.where((z) => getRozdielDni(z.termin) <= 0).toList();
+  }
+
+  if (vyhladavanieText.isNotEmpty) {
+    final hladany = bezDiakritiky(vyhladavanieText.trim().toLowerCase());
+    final cislo = int.tryParse(hladany);
+    final dnes = DateTime.now();
+    final dnesCisty = DateTime(dnes.year, dnes.month, dnes.day);
+
+    vysledok = vysledok.where((z) {
+      final nazov = bezDiakritiky(z.nazov.toLowerCase());
+      final datum = bezDiakritiky(z.datum.toLowerCase());
+      final termin = bezDiakritiky(z.termin.toLowerCase());
+      final poznamka = bezDiakritiky((z.poznamka ?? '').toLowerCase());
+      final stav = bezDiakritiky((z.stav ?? '').toLowerCase());
+
+      int rozdiel = 9999;
+      final terminDate = parseTermin(z.termin);
+      if (terminDate != null) {
+        final terminCisty = DateTime(terminDate.year, terminDate.month, terminDate.day);
+        rozdiel = terminCisty.difference(dnesCisty).inDays;
+      }
+
+      final textMatch = nazov.contains(hladany) ||
+          datum.contains(hladany) ||
+          termin.contains(hladany) ||
+          poznamka.contains(hladany) ||
+          stav.contains(hladany);
+
+      final cisloMatch = cislo != null && rozdiel <= cislo && rozdiel >= 0;
+
+      return textMatch || cisloMatch;
+    }).toList();
+  }
+
+  return vysledok;
 }
+} // ← uzatvára triedu _ZakazkyAppState
