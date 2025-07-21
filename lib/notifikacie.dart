@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart'; // kIsWeb
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:timezone/timezone.dart' as tz;
 
@@ -6,15 +7,14 @@ class NotifikacnaSluzba {
       FlutterLocalNotificationsPlugin();
 
   static Future<void> inicializuj() async {
+    if (kIsWeb) return; // Nepodporujeme web
+
     const nastavenia = InitializationSettings(
       android: AndroidInitializationSettings('@mipmap/ic_launcher'),
       iOS: DarwinInitializationSettings(
         requestAlertPermission: true,
         requestSoundPermission: true,
         requestBadgePermission: true,
-      ),
-      linux: LinuxInitializationSettings(
-        defaultActionName: 'Otvor zákazku',
       ),
     );
 
@@ -26,6 +26,8 @@ class NotifikacnaSluzba {
     String nazovZakazky,
     DateTime termin,
   ) async {
+    if (kIsWeb) return;
+
     final casNotifikacie = tz.TZDateTime.from(
       termin.subtract(const Duration(days: 1)),
       tz.local,
@@ -45,19 +47,19 @@ class NotifikacnaSluzba {
           priority: Priority.high,
         ),
         iOS: DarwinNotificationDetails(),
-         linux: LinuxNotificationDetails(),
       ),
-      androidAllowWhileIdle: true,
-      uiLocalNotificationDateInterpretation:
-        UILocalNotificationDateInterpretation.absoluteTime,
+      androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
+      matchDateTimeComponents: DateTimeComponents.time,
     );
   }
 
   static Future<void> zrus(int id) async {
+    if (kIsWeb) return;
     await plugin.cancel(id);
   }
 
   static Future<void> zrusVsetky() async {
+    if (kIsWeb) return;
     await plugin.cancelAll();
   }
 }

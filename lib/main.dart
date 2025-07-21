@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'notifikacie.dart';
 import 'package:zakazky_test/notifikacie.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -115,6 +116,7 @@ class Zakazka {
 
 class ZakazkyApp extends StatefulWidget {
   const ZakazkyApp({super.key});
+
   @override
   State<ZakazkyApp> createState() => _ZakazkyAppState();
 }
@@ -129,39 +131,39 @@ class _ZakazkyAppState extends State<ZakazkyApp> {
   String aktivnyFilter = 'Všetky';
   String vyhladavanieText = '';
   String poleTriedenia = 'termin';
-  String zoradPodla = 'datum'; // alebo 'nazov', 'termin'...
+  String zoradPodla = 'datum';
   bool vzostupne = true;
   bool zobrazHoruceLen = false;
   bool upozorneniaAktivne = true;
 
-@override
-void initState() {
-  super.initState();
-  nacitajZakazky();
+  @override
+  void initState() {
+    super.initState();
+    nacitajZakazky();
 
-  WidgetsBinding.instance.addPostFrameCallback((_) {
-    final horuce = zakazky.where((z) => getRozdielDni(z.termin) <= 0).toList();
-    if (!upozorneniaAktivne || horuce.isEmpty) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final horuce = zakazky.where((z) => getRozdielDni(z.termin) <= 0).toList();
+      if (!upozorneniaAktivne || horuce.isEmpty) return;
 
-    HapticFeedback.mediumImpact();
-    Future.delayed(const Duration(milliseconds: 200), () {
-      if (!mounted) return;
-      showDialog(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('⏰ Po termíne'),
-          content: Text('Máš ${horuce.length} zákaziek po termíne.'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('OK'),
-            ),
-          ],
-        ),
-      );
+      HapticFeedback.mediumImpact();
+      Future.delayed(const Duration(milliseconds: 200), () {
+        if (!mounted) return;
+        showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('⏰ Po termíne'),
+            content: Text('Máš ${horuce.length} zákaziek po termíne.'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('OK'),
+              ),
+            ],
+          ),
+        );
+      });
     });
-  });
-}
+  }
 
   @override
   void dispose() {
